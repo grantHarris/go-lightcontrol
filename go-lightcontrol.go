@@ -11,18 +11,39 @@ import "github.com/grantHarris/go-nanokontrol2"
 import "github.com/lucasb-eyer/go-colorful"
 import "github.com/mkb218/go-osc/lib"
 
-type Fixture struct {    
+type MODE uint8;
+
+type Fixture struct {
+	buffer []byte    
     R_addr uint8
     G_addr uint8
     B_addr uint8
     W_addr uint8
-    brightness_addr uint8
+    BRIGHTNESS_addr uint8
 }
 
-func (f *Fixture) Set(buffer []byte, r float64, g float64, b float64){
+const {
+	ADD MODE = iota
+	SUBTRACT
+	MULTIPLY
+	DIVIDE
+	SCREEN
+	OVERLAY
+)
+
+type Layer {
+	R float64;
+	G float64;
+	B float64;
+	A float64;
+	mode MODE
+	enabled bool
+}
+
+func (f *Fixture) Set(r float64, g float64, b float64){
 	
-	if f.brightness_addr != 0{
-		buffer[f.brightness_addr] = 255
+	if f.BRIGHTNESS_addr != 0{
+		f.buffer[f.BRIGHTNESS_addr] = 255
 	}
 
 	/*
@@ -34,12 +55,70 @@ func (f *Fixture) Set(buffer []byte, r float64, g float64, b float64){
 		r = r - common
 		g = g - common
 		b = b - common
-		buffer[f.W_addr] = byte(common * 255)
+		f.buffer[f.W_addr] = byte(Math.max(Math.min(common * 255, 255), 0))
 	}
 
-	buffer[f.R_addr] = byte(r * 255)
-	buffer[f.G_addr] = byte(g * 255)
-	buffer[f.B_addr] = byte(b * 255)
+	f.buffer[f.R_addr] = byte(Math.max(Math.min(r * 255, 255), 0))
+	f.buffer[f.G_addr] = byte(Math.max(Math.min(g * 255, 255), 0))
+	f.buffer[f.B_addr] = byte(Math.max(Math.min(b * 255, 255), 0))
+}
+
+func (f *Fixture) Render(layers []Layer){
+	var r, g, b float64
+
+	for layer := range layers {
+		if layer.enabled == true{
+			layer_r := layer.R * layer.A
+			layer_g := layer.G * layer.A
+			layer_b := layer.B * layer.A
+
+		    switch layer.mode{
+				case ADD:
+					r = r + layer_r
+					g = g + layer_g
+					b = b + layer_b
+				case SUBTRACT:
+					r = r - layer_r
+					g = g - layer_g
+					b = b - layer_b
+				case MULTIPLY:
+					r = r * layer_r
+					g = g * layer_g
+					b = b * layer_b
+				case DIVIDE:
+					r = r / layer_r
+					g = g / layer_g
+					b = b / layer_b
+				case SCREEN:
+					r = 1 - (1 - r)(1 - layer_r)
+					g = 1 - (1 - g)(1 - layer_g)
+					b = 1 - (1 - b)(1 - layer_b)
+				case OVERLAY:
+					if layer.A < 0.5{
+						r = 2*r*layer_r
+						g = 2*g*layer_g
+						b = 2*b*layer_b
+					}else{
+						r = 1 - 2(1 - r)(1 - layer_r)
+						g = 1 - 2(1 - g)(1 - layer_g)
+						b = 1 - 2(1 - b)(1 - layer_b)
+					}
+		    }
+			r = Min(Max(r, 0.0), 1.0) 
+			g = Min(Max(g, 0.0), 1.0) 
+			b = Min(Max(b, 0.0), 1.0)
+		}
+	}
+	f.Set(r, g, b)
+}
+
+func (f *Fixture) Get() byte{
+	return f.buffer[f.R_addr], f.buffer[f.G_addr], f.buffer[f.B_addr]
+}
+
+
+type FixtureSet struct{
+	set []Fixture
 }
 
 
@@ -48,55 +127,60 @@ func scale(old_min, old_max, new_min, new_max, value float64) float64{
 }
 
 func main() {
-	kitchen_right := Fixture{64, 63, 65, 0, 0}
-	kitchen_left := Fixture{74, 73, 75, 0, 0}
-
-    n := nanokontrol2.Initialize()    
-    b := make([]byte, 512)
     
     ip := "127.0.0.1"
     port := "7770"
 
+    nanokontrol2 := nanokontrol2.Initialize()    
+    osc_buffer := make([]byte, 512)
+
     address := osc.NewAddress(&ip, &port)
 
-    var counter float64
-    counter = 0
+    var hue_index float64
+    hue_index = 0
 
-    var ac float64
-    ac = 0
+    var value_index float64
+    value_index = 0
+
+	par1 := Fixture{osc_buffer, 4, 5, 6, 7, 3}
+	par2 := Fixture{osc_buffer, 14, 15, 16, 17, 13}
+	par3 := Fixture{osc_buffer, 24, 25, 26, 27, 23}
+	par4 := Fixture{osc_buffer, 34, 35, 36, 37, 33}
+
+	// kitchen_1 := Fixture{osc_buffer, 65, 64, 66, 0, 0}
+	// kitchen_2 := Fixture{osc_buffer, 75, 74, 76, 0, 0}
 
      for{
-     	//Hue period
-     	per := n.Get(16)
-		counter = counter + (per*math.Pi/220)
+     	hue_period := nanokontrol2.Get(16)
+     	hue_width := nanokontrol2.Get(0)
 
-     	//Hue size
-     	width := n.Get(0)
-     	width = 360 * width
+     	hue_period = float64(1)
+     	hue_width = float64(1)
 
-     	//Alpha period
-     	alpha := n.Get(17)
-		ac = ac + (alpha*math.Pi/220)
+		hue_index = hue_index + (hue_period*math.Pi/220)
+        hue := scale(-1, 1, 0, 360*hue_width, math.Sin(hue_index) + math.Sin(hue_index/2))
      	
-     	//Alpha low
-     	alpha_low := n.Get(1)
-     	//Alpha high
-     	alpha_high := n.Get(2)
-	     	
-        wave := math.Sin(counter) + math.Sin(counter/2)
-        hue := scale(-1, 1, 0, width, wave)
-        
-        wave_value := math.Sin(ac)
-        value := scale(-1, 1, alpha_low, alpha_high, wave_value)
+     	alpha_period := nanokontrol2.Get(17)
+     	alpha_low := nanokontrol2.Get(1)
+     	alpha_high := nanokontrol2.Get(2)
 
+     	alpha_period = float64(1)
+     	alpha_low = float64(1)
+     	alpha_high = float64(1)
+
+       	value_index = value_index + (alpha_period*math.Pi/220)
+        value := scale(-1, 1, alpha_low, alpha_high, math.Sin(value_index))
+        
         color := colorful.Hsv(hue, 1, value)
         fmt.Println(uint8(color.R * 255), uint8(color.G * 255), uint8(color.B * 255))
 
-        kitchen_right.Set(b, color.R, color.G, color.B)
-        kitchen_left.Set(b, color.R, color.G, color.B)
+        par1.Set(color.R, color.G, color.B)
+        par2.Set(color.R, color.G, color.B)
+        par3.Set(color.R, color.G, color.B)
+        par4.Set(color.R, color.G, color.B)
 
         message := make(osc.Message, 0)
-        message = append(message, osc.Blob(b))
+        message = append(message, osc.Blob(osc_buffer))
         message.Send(address, "/dmx/universe/1")
      	
         //DMX has a 44Hz max refresh rate
