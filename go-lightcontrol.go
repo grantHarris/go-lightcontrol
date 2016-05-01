@@ -1,4 +1,4 @@
-package main
+package goperiodicity
 
 import (
  //"math/rand"
@@ -10,18 +10,11 @@ import (
 import "github.com/grantHarris/go-nanokontrol2"
 import "github.com/lucasb-eyer/go-colorful"
 import "github.com/mkb218/go-osc/lib"
+import "flag"
 
 type MODE uint8;
 type WAVEFORM uint8;
 
-type Fixture struct {
-	buffer []byte    
-    R_addr uint8
-    G_addr uint8
-    B_addr uint8
-    W_addr uint8
-    BRIGHTNESS_addr uint8
-}
 
 const (
 	ADD MODE = iota
@@ -32,14 +25,6 @@ const (
 	OVERLAY
 )
 
-const (
-	SIN WAVEFORM = iota
-	COS
-	SAWTOOTH
-	TRIANGLE
-	SQUARE
-)
-
 type Layer struct{
 	R float64;
 	G float64;
@@ -47,6 +32,16 @@ type Layer struct{
 	A float64;
 	mode MODE
 	enabled bool
+}
+
+type Fixture struct {
+	buffer []byte
+	name string
+    R_addr uint8
+    G_addr uint8
+    B_addr uint8
+    W_addr uint8
+    BRIGHTNESS_addr uint8
 }
 
 func (f *Fixture) Set(r float64, g float64, b float64){
@@ -59,13 +54,18 @@ func (f *Fixture) Set(r float64, g float64, b float64){
 		Case where the fixture has a white channel. Subtract the common values
 		from each r g b and push to white channel
 	*/
-	if f.W_addr != 0 && r > 0 && g > 0 && b > 0 {
-		common := math.Min(math.Min(r, g), b)
-		r = r - common
-		g = g - common
-		b = b - common
-		f.buffer[f.W_addr] = byte(math.Max(math.Min(common * 255, 255), 0))
+	if f.W_addr != 0{
+		if r > 0 && g > 0 && b > 0 {
+			common := math.Min(math.Min(r, g), b)
+			r = r - common
+			g = g - common
+			b = b - common
+			f.buffer[f.W_addr] = byte(math.Max(math.Min(common * 255, 255), 0))
+		}
+	}else{
+		f.buffer[f.W_addr] = 0;
 	}
+
 
 	f.buffer[f.R_addr] = byte(math.Max(math.Min(r * 255, 255), 0))
 	f.buffer[f.G_addr] = byte(math.Max(math.Min(g * 255, 255), 0))
@@ -121,44 +121,82 @@ func (f *Fixture) Render(layers []Layer){
 	f.Set(r, g, b)
 }
 
-func (f *Fixture) Get()(r, g, b byte){
-	return f.buffer[f.R_addr], f.buffer[f.G_addr], f.buffer[f.B_addr]
-}
+// func (f *Fixture) Get()(r, g, b byte){
+// 	return f.buffer[f.R_addr], f.buffer[f.G_addr], f.buffer[f.B_addr]
+// }
 
 func (f *Fixture) Print(){
-	fmt.Println()
+	fmt.Print("(", f.name ,": ",f.buffer[f.R_addr], ", ", f.buffer[f.G_addr], ", ", f.buffer[f.B_addr])
+	if f.W_addr != 0{
+		fmt.Print(", ", f.buffer[f.W_addr])
+	}
+	fmt.Print(") ")
 }
 
 
-type FixtureSet struct{
-	set []Fixture
-}
+const (
+	SIN WAVEFORM = iota
+	COS
+	SAW
+	TRI
+	SQU
+)
+
 
 type Period struct{
 	index float64
 	period float64
 	width float64
+	fixture_offset float64
 	waveform WAVEFORM
-	nano_channel uint8
 }
 
-type Mode struct{
-	hue Period
-	sat Period
-	val Period
-	alpha Period
-	fixture_set FixtureSet
+
+func (p *Period) SetPeriod(period float64){
+	p.period = period
 }
 
-// func NewMode(){
+func (p *Period) Increment(){
+	p.index = p.index + p.period
+}
 
-// 	//m = Mode{}
-// 	// m.hue := 
-// 	// m.sat := 
-// 	// m.val := 
-// 	// m.alpha := 
-// 	// m.fixture_set
 
+func (p *Period) Value(fixture_index int) float64{
+	switch p.waveform{
+		case SIN:
+			return scale(-1, 1, 0, 360 * p.width, math.Sin(p.index + p.fixture_offset*float64(fixture_index)))
+		case COS:
+			return scale(-1, 1, 0, 360 * p.width, math.Cos(p.index + p.fixture_offset*float64(fixture_index)))
+		// case SAW:
+		// case TRI
+		// case SQU:
+	}
+	return 0.0
+}
+
+// type Mode struct{
+// 	hue Period
+// 	sat Period
+// 	val Period
+// 	alpha Period
+// 	layers []Layers
+// 	fixtures []Fixture
+// }
+
+// func (m *Mode) Iterate(){
+// 	for i, fixture := range m.fixtures{
+// 		for _, layer := range m.layers{
+// 			fixture.Set(m.hue.Value(i), m.sat.Value(i), m.val.Value(i))
+// 		}
+// 	}
+// }
+
+// func NewMode() Mode{
+// 	hue := Period{0.0, 0.0, 1.0, SIN}
+// 	sat := Period{0.0, 0.0, 1.0, SIN}
+// 	val := Period{0.0, 0.0, 1.0, SIN}
+// 	alpha := 1.0
+// 	m := Mode {hue, sat, val, alpha}
 // 	return m
 // }
 
@@ -167,14 +205,20 @@ func scale(old_min, old_max, new_min, new_max, value float64) float64{
 }
 
 func main() {
-    
-    ip := "127.0.0.1"
-    port := "7770"
+
+	var ip = flag.String("a", "127.0.0.1", "OSC output Address")
+	var port = flag.String("p", "1235", "OSC Output Port")
+	var universe = flag.String("u", "/dmx/universe/1", "OSC Output Universe")
+
+	var verbose = flag.Bool("v", false, "Verbose")
+	//var http = flag.String("h", "6969, "HTTP Server")
+
+	flag.Parse()
 
     nanokontrol2 := nanokontrol2.Initialize()    
     osc_buffer := make([]byte, 512)
 
-    address := osc.NewAddress(&ip, &port)
+    address := osc.NewAddress(ip, port)
 
     var hue_index float64
     hue_index = 0
@@ -182,13 +226,21 @@ func main() {
     var value_index float64
     value_index = 0
 
-	par1 := Fixture{osc_buffer, 4, 5, 6, 7, 3}
-	par2 := Fixture{osc_buffer, 14, 15, 16, 17, 13}
-	par3 := Fixture{osc_buffer, 24, 25, 26, 27, 23}
-	par4 := Fixture{osc_buffer, 34, 35, 36, 37, 33}
+	par1 := Fixture{osc_buffer, "Par 1", 4, 5, 6, 7, 3}
+	par2 := Fixture{osc_buffer, "Par 2", 14, 15, 16, 17, 13}
+	par3 := Fixture{osc_buffer, "Par 3", 24, 25, 26, 27, 23}
+	par4 := Fixture{osc_buffer, "Par 4", 34, 35, 36, 37, 33}
+	kitchen_1 := Fixture{osc_buffer, "Kitchen 1", 65, 64, 66, 0, 0}
+	kitchen_2 := Fixture{osc_buffer, "Kitchen 2", 75, 74, 76, 0, 0}
 
-	// kitchen_1 := Fixture{osc_buffer, 65, 64, 66, 0, 0}
-	// kitchen_2 := Fixture{osc_buffer, 75, 74, 76, 0, 0}
+	fixtures := []Fixture{}
+
+	fixtures = append(fixtures, par1)
+	fixtures = append(fixtures, par2)
+	fixtures = append(fixtures, par3)
+	fixtures = append(fixtures, par4)
+	fixtures = append(fixtures, kitchen_1)
+	fixtures = append(fixtures, kitchen_2)
 
      for{
      	hue_period := nanokontrol2.Get(16)
@@ -212,16 +264,19 @@ func main() {
         value := scale(-1, 1, alpha_low, alpha_high, math.Sin(value_index))
         
         color := colorful.Hsv(hue, 1, value)
-        fmt.Println(uint8(color.R * 255), uint8(color.G * 255), uint8(color.B * 255))
 
-        par1.Set(color.R, color.G, color.B)
-        par2.Set(color.R, color.G, color.B)
-        par3.Set(color.R, color.G, color.B)
-        par4.Set(color.R, color.G, color.B)
+        for _,fixture := range fixtures{
+        	fixture.Set(color.R, color.G, color.B)
+        	if *verbose == true{
+        		fixture.Print()
+        	}
+        }
+
+        fmt.Println()
 
         message := make(osc.Message, 0)
         message = append(message, osc.Blob(osc_buffer))
-        message.Send(address, "/dmx/universe/1")
+        message.Send(address, *universe)
      	
         //DMX has a 44Hz max refresh rate
         time.Sleep(time.Second / 44)
